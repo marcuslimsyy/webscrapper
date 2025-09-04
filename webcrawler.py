@@ -15,12 +15,13 @@ st.set_page_config(
 # Hardcoded Firecrawl API key
 FIRECRAWL_API_KEY = "fc-053ba42fcfe94e809cc1e8297c0993b4"
 
-# Import FirecrawlApp
+# Import FirecrawlApp with error handling
 try:
     from firecrawl import FirecrawlApp
     st.sidebar.success("✅ Using FirecrawlApp")
 except ImportError as e:
     st.error(f"❌ Could not import FirecrawlApp: {str(e)}")
+    st.info("💡 Try: pip install firecrawl-py")
     st.stop()
 
 def validate_url(url):
@@ -55,6 +56,73 @@ def get_current_datetime():
     # Use UTC timezone and format as RFC 3339
     now = datetime.now(timezone.utc)
     return now.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+
+def start_crawl_job(firecrawl, url, limit=5):
+    """Start a crawl job with multiple method fallbacks"""
+    
+    # Method 1: Try async_crawl_url (most common)
+    if hasattr(firecrawl, 'async_crawl_url'):
+        try:
+            st.info("🔄 Using async_crawl_url method...")
+            return firecrawl.async_crawl_url(url, limit=limit)
+        except Exception as e:
+            st.warning(f"async_crawl_url failed: {str(e)}")
+    
+    # Method 2: Try crawl_url_async 
+    if hasattr(firecrawl, 'crawl_url_async'):
+        try:
+            st.info("🔄 Using crawl_url_async method...")
+            return firecrawl.crawl_url_async(url, {'limit': limit})
+        except Exception as e:
+            st.warning(f"crawl_url_async failed: {str(e)}")
+    
+    # Method 3: Try crawl (synchronous fallback)
+    if hasattr(firecrawl, 'crawl'):
+        try:
+            st.info("🔄 Using synchronous crawl method...")
+            return firecrawl.crawl(url, {'limit': limit})
+        except Exception as e:
+            st.warning(f"crawl failed: {str(e)}")
+    
+    # Method 4: Try crawl_url (another common name)
+    if hasattr(firecrawl, 'crawl_url'):
+        try:
+            st.info("🔄 Using crawl_url method...")
+            return firecrawl.crawl_url(url, {'limit': limit})
+        except Exception as e:
+            st.warning(f"crawl_url failed: {str(e)}")
+    
+    # If all methods fail, show available methods
+    available_methods = [method for method in dir(firecrawl) if 'crawl' in method.lower()]
+    raise Exception(f"No working crawl method found. Available methods: {available_methods}")
+
+def check_crawl_status(firecrawl, job_id):
+    """Check crawl status with multiple method fallbacks"""
+    
+    # Method 1: Try check_crawl_status
+    if hasattr(firecrawl, 'check_crawl_status'):
+        try:
+            return firecrawl.check_crawl_status(job_id)
+        except Exception as e:
+            st.warning(f"check_crawl_status failed: {str(e)}")
+    
+    # Method 2: Try get_crawl_status
+    if hasattr(firecrawl, 'get_crawl_status'):
+        try:
+            return firecrawl.get_crawl_status(job_id)
+        except Exception as e:
+            st.warning(f"get_crawl_status failed: {str(e)}")
+    
+    # Method 3: Try crawl_status
+    if hasattr(firecrawl, 'crawl_status'):
+        try:
+            return firecrawl.crawl_status(job_id)
+        except Exception as e:
+            st.warning(f"crawl_status failed: {str(e)}")
+    
+    # If all methods fail
+    available_methods = [method for method in dir(firecrawl) if 'status' in method.lower()]
+    raise Exception(f"No working status method found. Available methods: {available_methods}")
 
 def fetch_all_existing_articles(instance_name, ada_api_key, knowledge_source_id):
     """Fetch all existing articles from Ada knowledge source with pagination"""
@@ -373,7 +441,7 @@ def poll_crawl_status(firecrawl, job_id):
     
     while attempt < max_attempts:
         try:
-            status_response = firecrawl.check_crawl_status(job_id)
+            status_response = check_crawl_status(firecrawl, job_id)
             
             if isinstance(status_response, dict):
                 status = status_response.get('status')
@@ -634,9 +702,31 @@ def display_paginated_articles(filtered_articles, search_term=""):
     
     return [filtered_articles[i] for i in all_selected_indices]
 
+def debug_firecrawl_methods(firecrawl):
+    """Debug function to show available Firecrawl methods"""
+    st.subheader("🔍 Debug: Available Firecrawl Methods")
+    
+    all_methods = [method for method in dir(firecrawl) if not method.startswith('_')]
+    crawl_methods = [method for method in all_methods if 'crawl' in method.lower()]
+    status_methods = [method for method in all_methods if 'status' in method.lower()]
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.write("**Crawl Methods:**")
+        for method in crawl_methods:
+            st.write(f"• {method}")
+    
+    with col2:
+        st.write("**Status Methods:**")
+        for method in status_methods:
+            st.write(f"• {method}")
+    
+    with st.expander("All Methods"):
+        st.write(all_methods)
+
 def main():
-    st.title("🔥 APAC WEB SCRAPER")
-    st.markdown("Scrape websites and upload to Ada")
+    st.title("🔥 Firecrawl → Ada Integration")
+    st.markdown("Scrape websites with Firecrawl and upload to Ada knowledge base")
     
     # Show hardcoded Firecrawl API key status
     st.sidebar.success("✅ Firecrawl API Key: Configured")
@@ -710,6 +800,9 @@ def main():
         else:
             st.sidebar.error(f"❌ {message}")
     
+    # Debug mode
+    debug_mode = st.sidebar.checkbox("🔍 Debug Mode", value=False, help="Show available Firecrawl methods")
+    
     # Show current configuration
     st.sidebar.markdown("---")
     st.sidebar.subheader("📋 Current Config")
@@ -728,6 +821,20 @@ def main():
     # Main content area - CRAWLING SECTION
     st.header("🕷️ Web Crawling")
     
+    # Initialize FirecrawlApp
+    try:
+        firecrawl = FirecrawlApp(api_key=FIRECRAWL_API_KEY)
+        st.success("✅ Firecrawl client initialized successfully")
+        
+        # Show debug info if enabled
+        if debug_mode:
+            debug_firecrawl_methods(firecrawl)
+            
+    except Exception as e:
+        st.error(f"❌ Failed to initialize Firecrawl: {str(e)}")
+        st.info("💡 Make sure firecrawl-py is installed: `pip install firecrawl-py`")
+        return
+    
     # Crawl button
     if st.button("🚀 Start Crawling", type="primary", key="start_crawl_button"):
         if not url or not validate_url(url)[0]:
@@ -736,25 +843,35 @@ def main():
             st.error("Please specify language and knowledge source ID")
         else:
             try:
-                # Initialize FirecrawlApp with hardcoded API key
-                firecrawl = FirecrawlApp(api_key=FIRECRAWL_API_KEY)
-                
                 st.info(f"🔄 Starting crawl of {url} (max {limit} pages)...")
                 
-                # Start the crawl job
+                # Start the crawl job using our robust method
                 with st.spinner("Starting crawl job..."):
-                    job_response = firecrawl.async_crawl_url(url)
+                    job_response = start_crawl_job(firecrawl, url, limit)
                 
                 # Handle response format to get job ID
                 if isinstance(job_response, dict):
                     job_id = job_response.get('jobId') or job_response.get('id')
                     success = job_response.get('success', True)
+                    
+                    # Handle synchronous response (when method returns data directly)
+                    if 'data' in job_response and not job_id:
+                        st.success("✅ Synchronous crawl completed!")
+                        display_crawl_results(job_response, language, knowledge_source_id)
+                        
+                        # Store in session state
+                        st.session_state['crawl_results'] = job_response
+                        st.session_state['crawl_url'] = url
+                        st.session_state['language'] = language
+                        st.session_state['knowledge_source_id'] = knowledge_source_id
+                        return
+                        
                 else:
                     job_id = getattr(job_response, 'jobId', None) or getattr(job_response, 'id', None)
                     success = getattr(job_response, 'success', True)
                 
                 if not success or not job_id:
-                    st.error("Failed to start crawl job")
+                    st.error("Failed to start crawl job or got synchronous result")
                     st.json(job_response)
                 else:
                     st.success(f"✅ Crawl job started! Job ID: `{job_id}`")
@@ -785,8 +902,10 @@ def main():
                     st.info("💡 Check your Firecrawl API key")
                 elif "400" in error_str:
                     st.info("💡 Check your URL format")
+                elif "no working" in error_str:
+                    st.info("💡 Firecrawl library version mismatch - try updating: `pip install --upgrade firecrawl-py`")
                 
-                if st.sidebar.checkbox("Show error details"):
+                if debug_mode:
                     st.exception(e)
 
     # Show previous crawl results if available
