@@ -58,93 +58,72 @@ def get_current_datetime():
     return now.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
 
 def start_crawl_job(firecrawl, url, limit=5):
-    """Start a crawl job with multiple method fallbacks"""
+    """Start a crawl job using the correct method signature"""
     
-    # Show all available methods for debugging
-    all_methods = [method for method in dir(firecrawl) if not method.startswith('_')]
-    crawl_methods = [method for method in all_methods if 'crawl' in method.lower()]
+    st.info("🔍 Analyzing available methods...")
     
-    st.info(f"🔍 Available crawl methods: {crawl_methods}")
-    
-    # Method 1: Try crawl_url with params dict (most common pattern)
-    if hasattr(firecrawl, 'crawl_url'):
+    # Method 1: Try start_crawl (appears to be available)
+    if hasattr(firecrawl, 'start_crawl'):
         try:
-            st.info("🔄 Trying crawl_url with params dict...")
-            params = {
-                'crawlerOptions': {
-                    'limit': limit
-                },
-                'pageOptions': {
-                    'onlyMainContent': True
+            st.info("🔄 Using start_crawl method...")
+            # Try with single parameter (URL)
+            result = firecrawl.start_crawl(url)
+            st.success("✅ start_crawl with URL only worked!")
+            return result
+        except Exception as e:
+            st.warning(f"start_crawl with URL failed: {str(e)}")
+            try:
+                # Try with parameters dict
+                st.info("🔄 Trying start_crawl with params dict...")
+                params = {
+                    'url': url,
+                    'limit': limit,
+                    'crawlerOptions': {
+                        'limit': limit
+                    }
                 }
-            }
-            result = firecrawl.crawl_url(url, params)
-            st.success("✅ crawl_url with params worked!")
+                result = firecrawl.start_crawl(params)
+                st.success("✅ start_crawl with params dict worked!")
+                return result
+            except Exception as e2:
+                st.warning(f"start_crawl with params failed: {str(e2)}")
+    
+    # Method 2: Try crawl (takes 2 arguments total = self + 1 parameter)
+    if hasattr(firecrawl, 'crawl'):
+        try:
+            st.info("🔄 Using crawl method with URL only...")
+            result = firecrawl.crawl(url)
+            st.success("✅ crawl with URL worked!")
             return result
         except Exception as e:
-            st.warning(f"crawl_url with params failed: {str(e)}")
-    
-    # Method 2: Try crawl_url with keyword arguments
-    if hasattr(firecrawl, 'crawl_url'):
-        try:
-            st.info("🔄 Trying crawl_url with kwargs...")
-            result = firecrawl.crawl_url(url, limit=limit)
-            st.success("✅ crawl_url with kwargs worked!")
-            return result
-        except Exception as e:
-            st.warning(f"crawl_url with kwargs failed: {str(e)}")
-    
-    # Method 3: Try crawl_url with just URL (synchronous)
-    if hasattr(firecrawl, 'crawl_url'):
-        try:
-            st.info("🔄 Trying crawl_url with just URL...")
-            result = firecrawl.crawl_url(url)
-            st.success("✅ crawl_url basic worked!")
-            return result
-        except Exception as e:
-            st.warning(f"crawl_url basic failed: {str(e)}")
-    
-    # Method 4: Try async_crawl_url if it exists
-    if hasattr(firecrawl, 'async_crawl_url'):
-        try:
-            st.info("🔄 Trying async_crawl_url...")
-            result = firecrawl.async_crawl_url(url)
-            st.success("✅ async_crawl_url worked!")
-            return result
-        except Exception as e:
-            st.warning(f"async_crawl_url failed: {str(e)}")
-    
-    # Method 5: Try scrape_url as fallback (single page)
-    if hasattr(firecrawl, 'scrape_url'):
-        try:
-            st.info("🔄 Falling back to scrape_url (single page)...")
-            result = firecrawl.scrape_url(url)
-            st.success("✅ scrape_url worked!")
-            # Format single page result to look like crawl result
-            if isinstance(result, dict) and 'data' not in result:
-                return {
-                    'status': 'completed',
-                    'data': [result],
-                    'completed': 1,
-                    'total': 1
+            st.warning(f"crawl with URL failed: {str(e)}")
+            try:
+                st.info("🔄 Using crawl method with params dict...")
+                params = {
+                    'url': url,
+                    'limit': limit,
+                    'crawlerOptions': {
+                        'limit': limit
+                    }
                 }
-            return result
-        except Exception as e:
-            st.warning(f"scrape_url failed: {str(e)}")
+                result = firecrawl.crawl(params)
+                st.success("✅ crawl with params dict worked!")
+                return result
+            except Exception as e2:
+                st.warning(f"crawl with params dict failed: {str(e2)}")
     
-    # Method 6: Try direct API call if all else fails
+    # Method 3: Direct API call as last resort
     try:
         st.info("🔄 Trying direct API call...")
-        import requests
-        
         headers = {
             'Authorization': f'Bearer {FIRECRAWL_API_KEY}',
             'Content-Type': 'application/json'
         }
         
-        # Try crawl endpoint
+        # Try start crawl endpoint
         crawl_data = {
             'url': url,
+            'limit': limit,
             'crawlerOptions': {
                 'limit': limit
             }
@@ -167,58 +146,22 @@ def start_crawl_job(firecrawl, url, limit=5):
     except Exception as e:
         st.warning(f"Direct API call failed: {str(e)}")
     
-    # If all methods fail, show comprehensive debug info
-    st.error("❌ All crawl methods failed!")
-    
-    with st.expander("🔍 Debug Information"):
-        st.write("**All available methods:**")
-        st.write(all_methods)
-        st.write("**Crawl-related methods:**")
-        st.write(crawl_methods)
-        st.write("**FirecrawlApp object type:**")
-        st.write(type(firecrawl))
-        
-        # Try to show method signatures
-        for method_name in crawl_methods[:3]:  # Show first 3
-            try:
-                method = getattr(firecrawl, method_name)
-                st.write(f"**{method_name} signature:**")
-                import inspect
-                sig = inspect.signature(method)
-                st.write(str(sig))
-            except Exception as e:
-                st.write(f"Could not inspect {method_name}: {e}")
-    
-    raise Exception(f"No working crawl method found. Available methods: {crawl_methods}")
+    # If all methods fail
+    available_methods = [method for method in dir(firecrawl) if 'crawl' in method.lower()]
+    raise Exception(f"No working crawl method found. Available methods: {available_methods}")
 
 def check_crawl_status(firecrawl, job_id):
-    """Check crawl status with multiple method fallbacks"""
+    """Check crawl status using the correct method"""
     
-    # Method 1: Try check_crawl_status
-    if hasattr(firecrawl, 'check_crawl_status'):
-        try:
-            return firecrawl.check_crawl_status(job_id)
-        except Exception as e:
-            st.warning(f"check_crawl_status failed: {str(e)}")
-    
-    # Method 2: Try get_crawl_status
+    # Method 1: Try get_crawl_status (appears to be available)
     if hasattr(firecrawl, 'get_crawl_status'):
         try:
             return firecrawl.get_crawl_status(job_id)
         except Exception as e:
             st.warning(f"get_crawl_status failed: {str(e)}")
     
-    # Method 3: Try crawl_status
-    if hasattr(firecrawl, 'crawl_status'):
-        try:
-            return firecrawl.crawl_status(job_id)
-        except Exception as e:
-            st.warning(f"crawl_status failed: {str(e)}")
-    
-    # Method 4: Direct API call
+    # Method 2: Direct API call
     try:
-        import requests
-        
         headers = {
             'Authorization': f'Bearer {FIRECRAWL_API_KEY}',
             'Content-Type': 'application/json'
@@ -239,9 +182,7 @@ def check_crawl_status(firecrawl, job_id):
     except Exception as e:
         st.error(f"Direct status API call failed: {str(e)}")
     
-    # If all methods fail
-    available_methods = [method for method in dir(firecrawl) if 'status' in method.lower()]
-    raise Exception(f"No working status method found. Available methods: {available_methods}")
+    raise Exception("No working status method found")
 
 def fetch_all_existing_articles(instance_name, ada_api_key, knowledge_source_id):
     """Fetch all existing articles from Ada knowledge source with pagination"""
@@ -821,31 +762,6 @@ def display_paginated_articles(filtered_articles, search_term=""):
     
     return [filtered_articles[i] for i in all_selected_indices]
 
-def debug_firecrawl_methods(firecrawl):
-    """Debug function to show available Firecrawl methods"""
-    st.subheader("🔍 Debug: Available Firecrawl Methods")
-    
-    all_methods = [method for method in dir(firecrawl) if not method.startswith('_')]
-    crawl_methods = [method for method in all_methods if 'crawl' in method.lower()]
-    scrape_methods = [method for method in all_methods if 'scrape' in method.lower()]
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.write("**Crawl Methods:**")
-        for method in crawl_methods:
-            st.write(f"• {method}")
-        st.write("**Scrape Methods:**")
-        for method in scrape_methods:
-            st.write(f"• {method}")
-    
-    with col2:
-        st.write("**All Methods (first 20):**")
-        for method in all_methods[:20]:
-            st.write(f"• {method}")
-    
-    with st.expander("All Methods (Complete List)"):
-        st.write(all_methods)
-
 def main():
     st.title("🔥 Firecrawl → Ada Integration")
     st.markdown("Scrape websites with Firecrawl and upload to Ada knowledge base")
@@ -922,9 +838,6 @@ def main():
         else:
             st.sidebar.error(f"❌ {message}")
     
-    # Debug mode
-    debug_mode = st.sidebar.checkbox("🔍 Debug Mode", value=True, help="Show available Firecrawl methods")
-    
     # Show current configuration
     st.sidebar.markdown("---")
     st.sidebar.subheader("📋 Current Config")
@@ -948,9 +861,9 @@ def main():
         firecrawl = FirecrawlApp(api_key=FIRECRAWL_API_KEY)
         st.success("✅ Firecrawl client initialized successfully")
         
-        # Show debug info if enabled
-        if debug_mode:
-            debug_firecrawl_methods(firecrawl)
+        # Show available methods for debugging
+        available_methods = [method for method in dir(firecrawl) if 'crawl' in method.lower()]
+        st.info(f"🔍 Available crawl methods: {available_methods}")
             
     except Exception as e:
         st.error(f"❌ Failed to initialize Firecrawl: {str(e)}")
@@ -967,7 +880,7 @@ def main():
             try:
                 st.info(f"🔄 Starting crawl of {url} (max {limit} pages)...")
                 
-                # Start the crawl job using our robust method
+                # Start the crawl job using our corrected method
                 with st.spinner("Starting crawl job..."):
                     job_response = start_crawl_job(firecrawl, url, limit)
                 
@@ -1027,8 +940,7 @@ def main():
                 elif "no working" in error_str:
                     st.info("💡 Firecrawl library version mismatch - try updating: `pip install --upgrade firecrawl-py`")
                 
-                if debug_mode:
-                    st.exception(e)
+                st.exception(e)
 
     # Show previous crawl results if available
     if 'crawl_results' in st.session_state:
