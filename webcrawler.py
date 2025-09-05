@@ -720,11 +720,12 @@ def main():
     
     # Crawl options
     st.sidebar.header("⚙️ Crawl Options")
-    limit = st.sidebar.slider(
+    limit = st.sidebar.number_input(
         "Max pages to crawl:",
-        min_value=100,
-        max_value=1000,
-        value=5
+        min_value=1,
+        value=50,
+        step=10,
+        help="Maximum number of pages to crawl (no upper limit)"
     )
     
     # Validate URL
@@ -750,6 +751,10 @@ def main():
     current_time = get_current_datetime()
     st.sidebar.info(f"**External Updated Time:**\n{current_time}")
     
+    # Warning about large crawls
+    if limit > 100:
+        st.sidebar.warning("⚠️ Large crawls may take significant time and credits!")
+    
     # Main content area - CRAWLING SECTION
     st.header("🕷️ Web Crawling")
     
@@ -765,6 +770,10 @@ def main():
                 firecrawl = FirecrawlApp(api_key=FIRECRAWL_API_KEY)
                 
                 st.info(f"🔄 Starting crawl of {url} (max {limit} pages)...")
+                
+                # Show warning for large crawls
+                if limit > 100:
+                    st.warning(f"⚠️ This will crawl up to {limit} pages. This may take a long time and use many credits.")
                 
                 # Step 1: Start crawl and get job ID (as per documentation)
                 with st.spinner("Starting crawl job..."):
