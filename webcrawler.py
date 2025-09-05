@@ -363,59 +363,6 @@ def upload_selected_articles_to_ada(selected_articles, instance_name, ada_api_ke
     
     return successful_uploads, failed_uploads
 
-def poll_crawl_status(firecrawl, job_id):
-    """Poll the crawl job status until completion using get_crawl_status"""
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    max_attempts = 60
-    attempt = 0
-    
-    while attempt < max_attempts:
-        try:
-            # Use get_crawl_status which is available
-            status_response = firecrawl.get_crawl_status(job_id)
-            
-            if isinstance(status_response, dict):
-                status = status_response.get('status')
-                completed = status_response.get('completed', 0)
-                total = status_response.get('total', 0)
-                data = status_response.get('data', [])
-            else:
-                status = getattr(status_response, 'status', None)
-                completed = getattr(status_response, 'completed', 0)
-                total = getattr(status_response, 'total', 0)
-                data = getattr(status_response, 'data', [])
-            
-            if status == "scraping":
-                progress = completed / total if total > 0 else 0.1
-                progress_bar.progress(min(progress, 0.9))
-                status_text.text(f"🔄 Crawling in progress... {completed}/{total} pages completed")
-                
-            elif status == "completed":
-                progress_bar.progress(1.0)
-                status_text.text(f"✅ Crawl completed! {completed} pages scraped")
-                return status_response
-                
-            elif status == "failed":
-                status_text.text("❌ Crawl failed")
-                st.error("Crawl job failed")
-                return None
-                
-            else:
-                progress_bar.progress(0.1)
-                status_text.text(f"🔄 Status: {status}... {completed}/{total} pages")
-            
-            time.sleep(5)
-            attempt += 1
-            
-        except Exception as e:
-            st.error(f"Error checking status: {str(e)}")
-            return None
-    
-    st.error("⏰ Polling timeout - crawl may still be running")
-    return None
-
 def format_for_ada_upload(page_data, index, language, knowledge_source_id):
     """Format scraped content for Ada upload"""
     if isinstance(page_data, dict):
@@ -455,19 +402,28 @@ def display_crawl_results(crawl_data, language, knowledge_source_id):
         st.warning("No data found in crawl results")
         return
     
-    # Handle different response formats
-    if isinstance(crawl_data, dict):
+    # Handle different response formats from firecrawl.crawl()
+    if hasattr(crawl_data, 'data'):
+        # SDK response object format
+        data = crawl_data.data
+        status = getattr(crawl_data, 'status', 'completed')
+        completed = getattr(crawl_data, 'completed', len(data))
+        total = getattr(crawl_data, 'total', len(data))
+        credits_used = getattr(crawl_data, 'creditsUsed', 'N/A')
+    elif isinstance(crawl_data, dict):
+        # Dictionary response format
         data = crawl_data.get('data', [])
         status = crawl_data.get('status', 'completed')
         completed = crawl_data.get('completed', len(data))
         total = crawl_data.get('total', len(data))
         credits_used = crawl_data.get('creditsUsed', 'N/A')
     else:
-        data = getattr(crawl_data, 'data', [])
-        status = getattr(crawl_data, 'status', 'completed')
-        completed = getattr(crawl_data, 'completed', len(data))
-        total = getattr(crawl_data, 'total', len(data))
-        credits_used = getattr(crawl_data, 'creditsUsed', 'N/A')
+        # List format (just data)
+        data = crawl_data if isinstance(crawl_data, list) else []
+        status = 'completed'
+        completed = len(data)
+        total = len(data)
+        credits_used = 'N/A'
     
     st.success(f"🎉 Crawl {status}! Found {len(data)} pages")
     
@@ -742,41 +698,31 @@ def main():
                 
                 st.info(f"🔄 Starting crawl of {url} (max {limit} pages)...")
                 
-                # Use start_crawl which IS available
-                with st.spinner("Starting crawl job..."):
-                    job_response = firecrawl.start_crawl(url)
+                # Use the simple crawl() method that handles everything automatically
+                with st.spinner("Crawling website... This may take a few minutes."):
+                    crawl_result = firecrawl.crawl(
+                        url=url,
+                        limit=limit,
+                        scrape_options={
+                            'onlyMainContent': True,
+                            'formats': ['markdown']
+                        }
+                    )
                 
-                # Handle response format to get job ID
-                if isinstance(job_response, dict):
-                    job_id = job_response.get('jobId') or job_response.get('id')
-                    success = job_response.get('success', True)
-                else:
-                    job_id = getattr(job_response, 'jobId', None) or getattr(job_response, 'id', None)
-                    success = getattr(job_response, 'success', True)
-                
-                if not success or not job_id:
-                    st.error("Failed to start crawl job")
-                    st.json(job_response)
-                else:
-                    st.success(f"✅ Crawl job started! Job ID: `{job_id}`")
+                # Display results immediately
+                if crawl_result:
+                    st.success("✅ Crawl completed successfully!")
                     
-                    # Poll for completion using get_crawl_status
-                    st.subheader("📊 Crawl Progress")
-                    final_result = poll_crawl_status(firecrawl, job_id)
+                    st.subheader("📈 Results")
+                    display_crawl_results(crawl_result, language, knowledge_source_id)
                     
-                    # Display results
-                    if final_result:
-                        st.subheader("📈 Results")
-                        display_crawl_results(final_result, language, knowledge_source_id)
-                        
-                        # Store in session state
-                        st.session_state['crawl_results'] = final_result
-                        st.session_state['crawl_url'] = url
-                        st.session_state['job_id'] = job_id
-                        st.session_state['language'] = language
-                        st.session_state['knowledge_source_id'] = knowledge_source_id
-                    else:
-                        st.error("❌ Failed to get crawl results")
+                    # Store in session state
+                    st.session_state['crawl_results'] = crawl_result
+                    st.session_state['crawl_url'] = url
+                    st.session_state['language'] = language
+                    st.session_state['knowledge_source_id'] = knowledge_source_id
+                else:
+                    st.error("❌ No results returned from crawl")
                         
             except Exception as e:
                 st.error(f"❌ Crawling failed: {str(e)}")
@@ -786,6 +732,8 @@ def main():
                     st.info("💡 Check your Firecrawl API key")
                 elif "400" in error_str:
                     st.info("💡 Check your URL format")
+                elif "payment" in error_str or "402" in error_str:
+                    st.info("💡 Check your Firecrawl account credits")
                 
                 if st.sidebar.checkbox("Show error details"):
                     st.exception(e)
