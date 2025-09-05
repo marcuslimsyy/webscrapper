@@ -363,6 +363,83 @@ def upload_selected_articles_to_ada(selected_articles, instance_name, ada_api_ke
     
     return successful_uploads, failed_uploads
 
+def poll_crawl_status(firecrawl, crawl_id):
+    """Poll the crawl job status until completion using get_crawl_status"""
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    debug_text = st.empty()
+    
+    max_attempts = 60
+    attempt = 0
+    
+    debug_text.info(f"🔍 Starting to poll crawl ID: {crawl_id}")
+    
+    while attempt < max_attempts:
+        try:
+            attempt += 1
+            debug_text.info(f"🔄 Polling attempt {attempt}/{max_attempts} for crawl ID: {crawl_id}")
+            
+            # Use get_crawl_status as per documentation
+            status_response = firecrawl.get_crawl_status(crawl_id)
+            
+            debug_text.info(f"📋 Got response type: {type(status_response)}")
+            
+            # Handle response format based on documentation
+            if isinstance(status_response, dict):
+                status = status_response.get('status')
+                completed = status_response.get('completed', 0)
+                total = status_response.get('total', 0)
+                data = status_response.get('data', [])
+                debug_text.info(f"📊 Dict format - Status: {status}, Completed: {completed}, Total: {total}, Data items: {len(data)}")
+            elif hasattr(status_response, 'status'):
+                # SDK object format
+                status = getattr(status_response, 'status', None)
+                completed = getattr(status_response, 'completed', 0)
+                total = getattr(status_response, 'total', 0)
+                data = getattr(status_response, 'data', [])
+                debug_text.info(f"📊 Object format - Status: {status}, Completed: {completed}, Total: {total}, Data items: {len(data)}")
+            else:
+                debug_text.error(f"❌ Unexpected response format: {status_response}")
+                status = None
+                completed = 0
+                total = 0
+                data = []
+            
+            if status == "scraping":
+                progress = completed / total if total > 0 else 0.1
+                progress_bar.progress(min(progress, 0.9))
+                status_text.text(f"🔄 Crawling in progress... {completed}/{total} pages completed")
+                debug_text.info(f"✅ Scraping status confirmed - {completed}/{total}")
+                
+            elif status == "completed":
+                progress_bar.progress(1.0)
+                status_text.text(f"✅ Crawl completed! {completed} pages scraped")
+                debug_text.success(f"🎉 Crawl completed successfully with {len(data)} pages")
+                debug_text.empty()  # Clear debug on success
+                return status_response
+                
+            elif status == "failed":
+                status_text.text("❌ Crawl failed")
+                debug_text.error("💥 Crawl job failed")
+                st.error("Crawl job failed")
+                return None
+                
+            else:
+                progress_bar.progress(0.1)
+                status_text.text(f"🔄 Status: {status}... {completed}/{total} pages")
+                debug_text.info(f"⏳ Status: {status}, waiting...")
+            
+            time.sleep(5)
+            
+        except Exception as e:
+            debug_text.error(f"💥 Exception in attempt {attempt}: {str(e)}")
+            st.error(f"Error checking status: {str(e)}")
+            time.sleep(5)
+    
+    debug_text.error("⏰ Max polling attempts reached")
+    st.error("⏰ Polling timeout - crawl may still be running")
+    return None
+
 def format_for_ada_upload(page_data, index, language, knowledge_source_id):
     """Format scraped content for Ada upload"""
     if isinstance(page_data, dict):
@@ -402,28 +479,19 @@ def display_crawl_results(crawl_data, language, knowledge_source_id):
         st.warning("No data found in crawl results")
         return
     
-    # Handle different response formats from firecrawl.crawl()
-    if hasattr(crawl_data, 'data'):
-        # SDK response object format
-        data = crawl_data.data
-        status = getattr(crawl_data, 'status', 'completed')
-        completed = getattr(crawl_data, 'completed', len(data))
-        total = getattr(crawl_data, 'total', len(data))
-        credits_used = getattr(crawl_data, 'creditsUsed', 'N/A')
-    elif isinstance(crawl_data, dict):
-        # Dictionary response format
+    # Handle different response formats
+    if isinstance(crawl_data, dict):
         data = crawl_data.get('data', [])
         status = crawl_data.get('status', 'completed')
         completed = crawl_data.get('completed', len(data))
         total = crawl_data.get('total', len(data))
         credits_used = crawl_data.get('creditsUsed', 'N/A')
     else:
-        # List format (just data)
-        data = crawl_data if isinstance(crawl_data, list) else []
-        status = 'completed'
-        completed = len(data)
-        total = len(data)
-        credits_used = 'N/A'
+        data = getattr(crawl_data, 'data', [])
+        status = getattr(crawl_data, 'status', 'completed')
+        completed = getattr(crawl_data, 'completed', len(data))
+        total = getattr(crawl_data, 'total', len(data))
+        credits_used = getattr(crawl_data, 'creditsUsed', 'N/A')
     
     st.success(f"🎉 Crawl {status}! Found {len(data)} pages")
     
@@ -698,9 +766,9 @@ def main():
                 
                 st.info(f"🔄 Starting crawl of {url} (max {limit} pages)...")
                 
-                # Use the simple crawl() method that handles everything automatically
-                with st.spinner("Crawling website... This may take a few minutes."):
-                    crawl_result = firecrawl.crawl(
+                # Step 1: Start crawl and get job ID (as per documentation)
+                with st.spinner("Starting crawl job..."):
+                    job_response = firecrawl.start_crawl(
                         url=url,
                         limit=limit,
                         scrape_options={
@@ -709,20 +777,43 @@ def main():
                         }
                     )
                 
-                # Display results immediately
-                if crawl_result:
-                    st.success("✅ Crawl completed successfully!")
-                    
-                    st.subheader("📈 Results")
-                    display_crawl_results(crawl_result, language, knowledge_source_id)
-                    
-                    # Store in session state
-                    st.session_state['crawl_results'] = crawl_result
-                    st.session_state['crawl_url'] = url
-                    st.session_state['language'] = language
-                    st.session_state['knowledge_source_id'] = knowledge_source_id
+                st.write(f"**Debug - Job Response Type:** {type(job_response)}")
+                st.write(f"**Debug - Job Response:** {job_response}")
+                
+                # Step 2: Extract job ID from response
+                if isinstance(job_response, dict):
+                    crawl_id = job_response.get('id') or job_response.get('jobId')
+                    success = job_response.get('success', True)
+                elif hasattr(job_response, 'id'):
+                    crawl_id = getattr(job_response, 'id', None)
+                    success = getattr(job_response, 'success', True)
                 else:
-                    st.error("❌ No results returned from crawl")
+                    crawl_id = None
+                    success = False
+                
+                if not success or not crawl_id:
+                    st.error("Failed to start crawl job")
+                    st.json(job_response)
+                else:
+                    st.success(f"✅ Crawl job started! Crawl ID: `{crawl_id}`")
+                    
+                    # Step 3: Poll for completion using get_crawl_status
+                    st.subheader("📊 Crawl Progress")
+                    final_result = poll_crawl_status(firecrawl, crawl_id)
+                    
+                    # Step 4: Display results
+                    if final_result:
+                        st.subheader("📈 Results")
+                        display_crawl_results(final_result, language, knowledge_source_id)
+                        
+                        # Store in session state
+                        st.session_state['crawl_results'] = final_result
+                        st.session_state['crawl_url'] = url
+                        st.session_state['crawl_id'] = crawl_id
+                        st.session_state['language'] = language
+                        st.session_state['knowledge_source_id'] = knowledge_source_id
+                    else:
+                        st.error("❌ Failed to get crawl results")
                         
             except Exception as e:
                 st.error(f"❌ Crawling failed: {str(e)}")
