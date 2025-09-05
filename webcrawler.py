@@ -718,16 +718,6 @@ def main():
         help="Your Ada knowledge source identifier"
     )
     
-    # Crawl options
-    st.sidebar.header("⚙️ Crawl Options")
-    limit = st.sidebar.number_input(
-        "Max pages to crawl:",
-        min_value=1,
-        value=9999,
-        step=10,
-        help="Maximum number of pages to crawl (no upper limit)"
-    )
-    
     # Validate URL
     if url:
         is_valid, message = validate_url(url)
@@ -741,7 +731,7 @@ def main():
     st.sidebar.subheader("📋 Current Config")
     st.sidebar.write(f"**Language:** {language}")
     st.sidebar.write(f"**Knowledge Source:** {knowledge_source_id}")
-    st.sidebar.write(f"**Max Pages:** {limit}")
+    st.sidebar.info("**Crawling:** Will find all pages on the website")
     if ada_config_valid:
         st.sidebar.write(f"**Ada Instance:** {instance_name}")
     
@@ -750,10 +740,6 @@ def main():
     st.sidebar.subheader("⏰ System Time")
     current_time = get_current_datetime()
     st.sidebar.info(f"**External Updated Time:**\n{current_time}")
-    
-    # Warning about large crawls
-    if limit > 100:
-        st.sidebar.warning("⚠️ Large crawls may take significant time and credits!")
     
     # Main content area - CRAWLING SECTION
     st.header("🕷️ Web Crawling")
@@ -769,17 +755,13 @@ def main():
                 # Initialize FirecrawlApp with hardcoded API key
                 firecrawl = FirecrawlApp(api_key=FIRECRAWL_API_KEY)
                 
-                st.info(f"🔄 Starting crawl of {url} (max {limit} pages)...")
+                st.info(f"🔄 Starting crawl of {url} (will find all available pages)...")
+                st.warning("⚠️ This will crawl all pages found on the website. This may take time and use credits based on the site size.")
                 
-                # Show warning for large crawls
-                if limit > 100:
-                    st.warning(f"⚠️ This will crawl up to {limit} pages. This may take a long time and use many credits.")
-                
-                # Step 1: Start crawl and get job ID (as per documentation)
+                # Step 1: Start crawl and get job ID (no limit = crawl all pages)
                 with st.spinner("Starting crawl job..."):
                     job_response = firecrawl.start_crawl(
                         url=url,
-                        limit=limit,
                         scrape_options={
                             'onlyMainContent': True,
                             'formats': ['markdown']
