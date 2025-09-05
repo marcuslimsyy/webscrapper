@@ -364,117 +364,56 @@ def upload_selected_articles_to_ada(selected_articles, instance_name, ada_api_ke
     return successful_uploads, failed_uploads
 
 def poll_crawl_status(firecrawl, job_id):
-    """Poll the crawl job status until completion with debugging"""
+    """Poll the crawl job status until completion using get_crawl_status"""
     progress_bar = st.progress(0)
     status_text = st.empty()
-    debug_text = st.empty()
     
-    max_attempts = 60  # Maximum polling attempts
+    max_attempts = 60
     attempt = 0
-    
-    # Show available methods for debugging
-    status_methods = [method for method in dir(firecrawl) if 'status' in method.lower()]
-    debug_text.text(f"🔍 Available status methods: {status_methods}")
     
     while attempt < max_attempts:
         try:
-            attempt += 1
-            debug_text.text(f"🔍 Attempt {attempt}/{max_attempts} - Checking status...")
+            # Use get_crawl_status which is available
+            status_response = firecrawl.get_crawl_status(job_id)
             
-            # Try different status methods
-            status_response = None
-            
-            # Method 1: Try check_crawl_status
-            if hasattr(firecrawl, 'check_crawl_status'):
-                try:
-                    status_response = firecrawl.check_crawl_status(job_id)
-                    debug_text.text(f"✅ check_crawl_status worked - Attempt {attempt}")
-                except Exception as e:
-                    debug_text.text(f"❌ check_crawl_status failed: {str(e)} - Attempt {attempt}")
-            
-            # Method 2: Try get_crawl_status if first failed
-            if not status_response and hasattr(firecrawl, 'get_crawl_status'):
-                try:
-                    status_response = firecrawl.get_crawl_status(job_id)
-                    debug_text.text(f"✅ get_crawl_status worked - Attempt {attempt}")
-                except Exception as e:
-                    debug_text.text(f"❌ get_crawl_status failed: {str(e)} - Attempt {attempt}")
-            
-            # Method 3: Direct API call if library methods fail
-            if not status_response:
-                try:
-                    headers = {
-                        'Authorization': f'Bearer {FIRECRAWL_API_KEY}',
-                        'Content-Type': 'application/json'
-                    }
-                    
-                    response = requests.get(
-                        f'https://api.firecrawl.dev/v0/crawl/status/{job_id}',
-                        headers=headers,
-                        timeout=30
-                    )
-                    
-                    if response.status_code == 200:
-                        status_response = response.json()
-                        debug_text.text(f"✅ Direct API call worked - Attempt {attempt}")
-                    else:
-                        debug_text.text(f"❌ Direct API failed: {response.status_code} - Attempt {attempt}")
-                        
-                except Exception as e:
-                    debug_text.text(f"❌ Direct API error: {str(e)} - Attempt {attempt}")
-            
-            # If we got a response, process it
-            if status_response:
-                debug_text.text(f"📋 Got response - Processing... - Attempt {attempt}")
-                
-                if isinstance(status_response, dict):
-                    status = status_response.get('status')
-                    completed = status_response.get('completed', 0)
-                    total = status_response.get('total', 0)
-                    data = status_response.get('data', [])
-                else:
-                    status = getattr(status_response, 'status', None)
-                    completed = getattr(status_response, 'completed', 0)
-                    total = getattr(status_response, 'total', 0)
-                    data = getattr(status_response, 'data', [])
-                
-                debug_text.text(f"📊 Status: {status}, Completed: {completed}, Total: {total} - Attempt {attempt}")
-                
-                if status == "scraping":
-                    progress = completed / total if total > 0 else 0.1
-                    progress_bar.progress(min(progress, 0.9))
-                    status_text.text(f"🔄 Crawling in progress... {completed}/{total} pages completed")
-                    
-                elif status == "completed":
-                    progress_bar.progress(1.0)
-                    status_text.text(f"✅ Crawl completed! {completed} pages scraped")
-                    debug_text.empty()  # Clear debug text on success
-                    return status_response
-                    
-                elif status == "failed":
-                    status_text.text("❌ Crawl failed")
-                    debug_text.empty()
-                    st.error("Crawl job failed")
-                    return None
-                    
-                else:
-                    progress_bar.progress(0.1)
-                    status_text.text(f"🔄 Status: {status}... {completed}/{total} pages")
-            
+            if isinstance(status_response, dict):
+                status = status_response.get('status')
+                completed = status_response.get('completed', 0)
+                total = status_response.get('total', 0)
+                data = status_response.get('data', [])
             else:
-                status_text.text(f"⚠️ No response received - retrying... (Attempt {attempt}/{max_attempts})")
+                status = getattr(status_response, 'status', None)
+                completed = getattr(status_response, 'completed', 0)
+                total = getattr(status_response, 'total', 0)
+                data = getattr(status_response, 'data', [])
+            
+            if status == "scraping":
+                progress = completed / total if total > 0 else 0.1
+                progress_bar.progress(min(progress, 0.9))
+                status_text.text(f"🔄 Crawling in progress... {completed}/{total} pages completed")
+                
+            elif status == "completed":
+                progress_bar.progress(1.0)
+                status_text.text(f"✅ Crawl completed! {completed} pages scraped")
+                return status_response
+                
+            elif status == "failed":
+                status_text.text("❌ Crawl failed")
+                st.error("Crawl job failed")
+                return None
+                
+            else:
+                progress_bar.progress(0.1)
+                status_text.text(f"🔄 Status: {status}... {completed}/{total} pages")
             
             time.sleep(5)
+            attempt += 1
             
         except Exception as e:
-            debug_text.text(f"💥 Exception in attempt {attempt}: {str(e)}")
             st.error(f"Error checking status: {str(e)}")
-            time.sleep(5)
+            return None
     
-    # If we get here, we've exceeded max attempts
-    debug_text.empty()
     st.error("⏰ Polling timeout - crawl may still be running")
-    st.info("💡 The crawl might still complete. You can try checking the results later.")
     return None
 
 def format_for_ada_upload(page_data, index, language, knowledge_source_id):
@@ -803,9 +742,9 @@ def main():
                 
                 st.info(f"🔄 Starting crawl of {url} (max {limit} pages)...")
                 
-                # Start the crawl job - EXACT same method as your working version
+                # Use start_crawl which IS available
                 with st.spinner("Starting crawl job..."):
-                    job_response = firecrawl.async_crawl_url(url)
+                    job_response = firecrawl.start_crawl(url)
                 
                 # Handle response format to get job ID
                 if isinstance(job_response, dict):
@@ -821,7 +760,7 @@ def main():
                 else:
                     st.success(f"✅ Crawl job started! Job ID: `{job_id}`")
                     
-                    # Poll for completion with enhanced debugging
+                    # Poll for completion using get_crawl_status
                     st.subheader("📊 Crawl Progress")
                     final_result = poll_crawl_status(firecrawl, job_id)
                     
