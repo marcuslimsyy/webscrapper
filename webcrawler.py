@@ -723,7 +723,7 @@ def main():
     limit = st.sidebar.number_input(
         "Max pages to crawl:",
         min_value=1,
-        value=50,
+        value=9999,
         step=10,
         help="Maximum number of pages to crawl (no upper limit)"
     )
