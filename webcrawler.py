@@ -722,8 +722,8 @@ def main():
     st.sidebar.header("⚙️ Crawl Options")
     limit = st.sidebar.slider(
         "Max pages to crawl:",
-        min_value=1,
-        max_value=20,
+        min_value=100,
+        max_value=1000,
         value=5
     )
     
