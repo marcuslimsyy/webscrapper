@@ -4,6 +4,8 @@ import re
 import json
 import requests
 from datetime import datetime, timezone
+from urllib.parse import urlparse
+import hashlib
 
 # Set page config FIRST
 st.set_page_config(
@@ -55,6 +57,49 @@ def get_current_datetime():
     # Use UTC timezone and format as RFC 3339
     now = datetime.now(timezone.utc)
     return now.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+
+def generate_article_id_from_url(source_url, index):
+    """Generate article ID from URL path"""
+    try:
+        parsed_url = urlparse(source_url)
+        
+        # Get the path part of the URL
+        path = parsed_url.path.strip('/')
+        
+        # If path is empty (root page), use domain + "home"
+        if not path:
+            domain = parsed_url.netloc.replace('www.', '').replace('.', '_')
+            return f"{domain}_home"
+        
+        # Clean up the path for use as ID
+        # Replace common separators with underscores
+        clean_path = path.replace('/', '_').replace('-', '_').replace('.', '_')
+        
+        # Remove file extensions
+        clean_path = re.sub(r'\.(html?|php|asp|jsp)$', '', clean_path, flags=re.IGNORECASE)
+        
+        # Remove special characters except underscores and alphanumeric
+        clean_path = re.sub(r'[^a-zA-Z0-9_]', '', clean_path)
+        
+        # Ensure it starts with a letter (for valid ID)
+        if clean_path and not clean_path[0].isalpha():
+            clean_path = f"page_{clean_path}"
+        
+        # If clean_path is empty after cleaning, generate from hash
+        if not clean_path:
+            url_hash = hashlib.md5(source_url.encode()).hexdigest()[:8]
+            clean_path = f"page_{url_hash}"
+        
+        # Limit length to reasonable size
+        if len(clean_path) > 50:
+            clean_path = clean_path[:50]
+        
+        return clean_path
+        
+    except Exception as e:
+        # Fallback to hash-based ID if URL parsing fails
+        url_hash = hashlib.md5(source_url.encode()).hexdigest()[:8]
+        return f"page_{url_hash}"
 
 def fetch_all_existing_articles(instance_name, ada_api_key, knowledge_source_id):
     """Fetch all existing articles from Ada knowledge source with pagination"""
@@ -173,7 +218,7 @@ def resolve_article_ids(scraped_articles, instance_name, ada_api_key, knowledge_
         else:
             # No match - keep original scraped ID
             new_articles_count += 1
-            st.write(f"   ➕ **New**: '{scraped_name}' (Scraped ID: {original_id})")
+            st.write(f"   ➕ **New**: '{scraped_name}' (Generated ID: {original_id})")
         
         updated_articles.append(article_copy)
     
@@ -441,28 +486,28 @@ def poll_crawl_status(firecrawl, crawl_id):
     return None
 
 def format_for_ada_upload(page_data, index, language, knowledge_source_id):
-    """Format scraped content for Ada upload"""
+    """Format scraped content for Ada upload with URL path-based ID"""
     if isinstance(page_data, dict):
         markdown_content = page_data.get('markdown', page_data.get('content', ''))
         metadata = page_data.get('metadata', {})
         title = metadata.get('title', f'Page {index + 1}')
         source_url = metadata.get('sourceURL', metadata.get('url', 'N/A'))
-        scrape_id = metadata.get('scrapeId', f'scrape_{index + 1}')
     else:
         markdown_content = getattr(page_data, 'markdown', getattr(page_data, 'content', ''))
         metadata = getattr(page_data, 'metadata', {})
         if isinstance(metadata, dict):
             title = metadata.get('title', f'Page {index + 1}')
             source_url = metadata.get('sourceURL', metadata.get('url', 'N/A'))
-            scrape_id = metadata.get('scrapeId', f'scrape_{index + 1}')
         else:
             title = getattr(metadata, 'title', f'Page {index + 1}')
             source_url = getattr(metadata, 'sourceURL', getattr(metadata, 'url', 'N/A'))
-            scrape_id = getattr(metadata, 'scrapeId', f'scrape_{index + 1}')
+    
+    # Generate ID from URL path
+    article_id = generate_article_id_from_url(source_url, index)
     
     # Format for Ada API with ALL required fields including external_updated
     ada_format = {
-        "id": scrape_id,
+        "id": article_id,
         "name": title,
         "content": markdown_content,
         "url": source_url,
@@ -732,6 +777,7 @@ def main():
     st.sidebar.write(f"**Language:** {language}")
     st.sidebar.write(f"**Knowledge Source:** {knowledge_source_id}")
     st.sidebar.info("**Crawling:** Will find all pages on the website")
+    st.sidebar.info("**Article IDs:** Generated from URL paths")
     if ada_config_valid:
         st.sidebar.write(f"**Ada Instance:** {instance_name}")
     
@@ -896,12 +942,13 @@ def main():
                 with col3:
                     st.metric("Target Instance", instance_name)
                 
-                # Show sample payloads for first 10 selected articles
+                # Show sample payloads for first 3 selected articles to see the URL path IDs
                 if selected_articles:
-                    with st.expander(f"📋 Sample Payloads (First {min(10, len(selected_articles))} Selected Articles)"):
-                        sample_articles = selected_articles[:10]  # Show first 10
+                    with st.expander(f"📋 Sample Payloads with URL Path IDs (First {min(3, len(selected_articles))} Selected Articles)"):
+                        sample_articles = selected_articles[:3]  # Show first 3
                         for i, article in enumerate(sample_articles):
                             st.write(f"**Article {i+1}: {article['name']}**")
+                            st.write(f"**Generated ID from URL path:** `{article['id']}`")
                             st.json(article)
                             if i < len(sample_articles) - 1:  # Add separator except for last item
                                 st.markdown("---")
