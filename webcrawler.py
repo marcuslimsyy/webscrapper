@@ -101,6 +101,33 @@ def generate_article_id_from_url(source_url, index):
         url_hash = hashlib.md5(source_url.encode()).hexdigest()[:8]
         return f"page_{url_hash}"
 
+def generate_unique_title_from_url(source_url, original_title, index):
+    """Generate meaningful title from URL when original title is generic"""
+    
+    try:
+        parsed_url = urlparse(source_url)
+        path_parts = parsed_url.path.strip('/').split('/')
+        
+        # Take the last meaningful part (usually the most descriptive)
+        if path_parts:
+            last_part = path_parts[-1]
+            
+            # Clean up the descriptive part
+            # Remove leading numbers and hyphens: "7-petting-zoo..." -> "petting-zoo..."
+            clean_part = re.sub(r'^\d+-', '', last_part)
+            
+            # Convert to readable title: "petting-zoo-and-farm-animals-around-selangor"
+            # -> "Petting Zoo And Farm Animals Around Selangor"
+            readable_title = clean_part.replace('-', ' ').replace('_', ' ')
+            readable_title = ' '.join(word.capitalize() for word in readable_title.split())
+            
+            return readable_title if readable_title.strip() else f"Page {index + 1}"
+        
+        return f"Page {index + 1}"
+        
+    except:
+        return f"Page {index + 1}"
+
 def fetch_all_existing_articles(instance_name, ada_api_key, knowledge_source_id):
     """Fetch all existing articles from Ada knowledge source with pagination"""
     base_url = f"https://{instance_name}.ada.support/api/v2/knowledge/articles/"
@@ -196,33 +223,34 @@ def resolve_article_ids(scraped_articles, instance_name, ada_api_key, knowledge_
     
     st.write(f"📋 Created mapping for {len(existing_name_to_id)} articles with valid names and IDs")
     
-    # Process scraped articles
-    updated_articles = []
-    updates_count = 0
-    new_articles_count = 0
-    
-    st.write("🔄 Processing scraped articles...")
-    
-    for i, article in enumerate(scraped_articles):
-        article_copy = article.copy()
-        scraped_name = article['name']
-        original_id = article['id']
+    # Process scraped articles - HIDE THE LONG LIST
+    with st.expander("📋 View Article Processing Details", expanded=False):
+        updated_articles = []
+        updates_count = 0
+        new_articles_count = 0
         
-        # Check if name exists in Ada
-        if scraped_name in existing_name_to_id:
-            # Name match found - use existing Ada ID
-            existing_id = existing_name_to_id[scraped_name]
-            article_copy['id'] = existing_id
-            updates_count += 1
-            st.write(f"   🔄 **Update**: '{scraped_name}' (Ada ID: {existing_id})")
-        else:
-            # No match - keep original scraped ID
-            new_articles_count += 1
-            st.write(f"   ➕ **New**: '{scraped_name}' (Generated ID: {original_id})")
+        st.write("🔄 Processing scraped articles...")
         
-        updated_articles.append(article_copy)
+        for i, article in enumerate(scraped_articles):
+            article_copy = article.copy()
+            scraped_name = article['name']
+            original_id = article['id']
+            
+            # Check if name exists in Ada
+            if scraped_name in existing_name_to_id:
+                # Name match found - use existing Ada ID
+                existing_id = existing_name_to_id[scraped_name]
+                article_copy['id'] = existing_id
+                updates_count += 1
+                st.write(f"   🔄 **Update**: '{scraped_name}' (Ada ID: {existing_id})")
+            else:
+                # No match - keep original scraped ID
+                new_articles_count += 1
+                st.write(f"   ➕ **New**: '{scraped_name}' (Generated ID: {original_id})")
+            
+            updated_articles.append(article_copy)
     
-    # Summary
+    # Summary - KEEP THIS VISIBLE
     st.markdown("---")
     st.subheader("📊 Article ID Resolution Summary")
     
@@ -416,18 +444,29 @@ def poll_crawl_status(firecrawl, crawl_id):
     
     max_attempts = 60
     attempt = 0
+    start_time = time.time()
     
     debug_text.info(f"🔍 Starting to poll crawl ID: {crawl_id}")
     
     while attempt < max_attempts:
         try:
             attempt += 1
-            debug_text.info(f"🔄 Polling attempt {attempt}/{max_attempts} for crawl ID: {crawl_id}")
+            elapsed_time = int(time.time() - start_time)
+            
+            # Pulsing status indicator
+            if attempt % 4 == 0: 
+                status_indicator = "🔄"
+            elif attempt % 4 == 1: 
+                status_indicator = "⏳"  
+            elif attempt % 4 == 2: 
+                status_indicator = "🔍"
+            else: 
+                status_indicator = "📡"
+            
+            debug_text.success(f"✅ System responsive - Last check: {datetime.now().strftime('%H:%M:%S')} | Elapsed: {elapsed_time}s")
             
             # Use get_crawl_status as per documentation
             status_response = firecrawl.get_crawl_status(crawl_id)
-            
-            debug_text.info(f"📋 Got response type: {type(status_response)}")
             
             # Handle response format based on documentation
             if isinstance(status_response, dict):
@@ -435,14 +474,12 @@ def poll_crawl_status(firecrawl, crawl_id):
                 completed = status_response.get('completed', 0)
                 total = status_response.get('total', 0)
                 data = status_response.get('data', [])
-                debug_text.info(f"📊 Dict format - Status: {status}, Completed: {completed}, Total: {total}, Data items: {len(data)}")
             elif hasattr(status_response, 'status'):
                 # SDK object format
                 status = getattr(status_response, 'status', None)
                 completed = getattr(status_response, 'completed', 0)
                 total = getattr(status_response, 'total', 0)
                 data = getattr(status_response, 'data', [])
-                debug_text.info(f"📊 Object format - Status: {status}, Completed: {completed}, Total: {total}, Data items: {len(data)}")
             else:
                 debug_text.error(f"❌ Unexpected response format: {status_response}")
                 status = None
@@ -453,8 +490,7 @@ def poll_crawl_status(firecrawl, crawl_id):
             if status == "scraping":
                 progress = completed / total if total > 0 else 0.1
                 progress_bar.progress(min(progress, 0.9))
-                status_text.text(f"🔄 Crawling in progress... {completed}/{total} pages completed")
-                debug_text.info(f"✅ Scraping status confirmed - {completed}/{total}")
+                status_text.text(f"{status_indicator} Crawling active... {completed}/{total} pages (Check #{attempt})")
                 
             elif status == "completed":
                 progress_bar.progress(1.0)
@@ -471,8 +507,7 @@ def poll_crawl_status(firecrawl, crawl_id):
                 
             else:
                 progress_bar.progress(0.1)
-                status_text.text(f"🔄 Status: {status}... {completed}/{total} pages")
-                debug_text.info(f"⏳ Status: {status}, waiting...")
+                status_text.text(f"{status_indicator} Status: {status}... {completed}/{total} pages (Check #{attempt})")
             
             time.sleep(5)
             
@@ -485,8 +520,8 @@ def poll_crawl_status(firecrawl, crawl_id):
     st.error("⏰ Polling timeout - crawl may still be running")
     return None
 
-def format_for_ada_upload(page_data, index, language, knowledge_source_id):
-    """Format scraped content for Ada upload with URL path-based ID"""
+def format_for_ada_upload(page_data, index, language, knowledge_source_id, use_url_titles=False):
+    """Format scraped content for Ada upload with URL path-based ID and optional URL titles"""
     if isinstance(page_data, dict):
         markdown_content = page_data.get('markdown', page_data.get('content', ''))
         metadata = page_data.get('metadata', {})
@@ -505,10 +540,18 @@ def format_for_ada_upload(page_data, index, language, knowledge_source_id):
     # Generate ID from URL path
     article_id = generate_article_id_from_url(source_url, index)
     
+    # TITLE LOGIC WITH TOGGLE
+    if use_url_titles:
+        # Use cleaned URL title
+        final_title = generate_unique_title_from_url(source_url, title, index)
+    else:
+        # Use original scraped title
+        final_title = title
+    
     # Format for Ada API with ALL required fields including external_updated
     ada_format = {
         "id": article_id,
-        "name": title,
+        "name": final_title,
         "content": markdown_content,
         "url": source_url,
         "language": language,
@@ -518,7 +561,61 @@ def format_for_ada_upload(page_data, index, language, knowledge_source_id):
     
     return ada_format
 
-def display_crawl_results(crawl_data, language, knowledge_source_id):
+def update_existing_crawl_data(language, knowledge_source_id, use_url_titles):
+    """Re-format existing crawl data when sidebar settings change"""
+    if 'crawl_results' in st.session_state and st.session_state['crawl_results']:
+        # Re-format with new settings
+        crawl_data = st.session_state['crawl_results']
+        if isinstance(crawl_data, dict):
+            data = crawl_data.get('data', [])
+        else:
+            data = getattr(crawl_data, 'data', [])
+        
+        # Re-format all data with current settings
+        ada_formatted_data = []
+        for i, page in enumerate(data):
+            ada_format = format_for_ada_upload(
+                page, i, language, knowledge_source_id, use_url_titles
+            )
+            ada_formatted_data.append(ada_format)
+        
+        # Update session state
+        st.session_state['ada_formatted_data'] = ada_formatted_data
+        return True
+    
+    return False
+
+def detect_and_update_settings(language, knowledge_source_id, use_url_titles):
+    """Detect any setting changes and auto-update existing crawl data"""
+    
+    settings_changed = False
+    changes = []
+    
+    # Check each setting for changes
+    if st.session_state.get('current_language') != language:
+        st.session_state['current_language'] = language
+        settings_changed = True
+        changes.append("Language")
+
+    if st.session_state.get('current_knowledge_source') != knowledge_source_id:
+        st.session_state['current_knowledge_source'] = knowledge_source_id
+        settings_changed = True
+        changes.append("Knowledge Source ID")
+        
+    if st.session_state.get('current_use_url_titles') != use_url_titles:
+        st.session_state['current_use_url_titles'] = use_url_titles
+        settings_changed = True
+        changes.append("Title Format")
+
+    # AUTO-UPDATE existing crawl data if any settings changed
+    if settings_changed and 'crawl_results' in st.session_state:
+        if update_existing_crawl_data(language, knowledge_source_id, use_url_titles):
+            st.sidebar.success(f"✅ Updated: {', '.join(changes)}")
+            st.sidebar.info("💾 Existing crawl data refreshed - no re-crawling needed!")
+    
+    return settings_changed
+
+def display_crawl_results(crawl_data, language, knowledge_source_id, use_url_titles=False):
     """Display only crawl results summary - no article previews"""
     if not crawl_data:
         st.warning("No data found in crawl results")
@@ -549,10 +646,10 @@ def display_crawl_results(crawl_data, language, knowledge_source_id):
     with col3:
         st.metric("Credits Used", credits_used)
     
-    # Format all data for Ada
+    # Format all data for Ada with current settings
     ada_formatted_data = []
     for i, page in enumerate(data):
-        ada_format = format_for_ada_upload(page, i, language, knowledge_source_id)
+        ada_format = format_for_ada_upload(page, i, language, knowledge_source_id, use_url_titles)
         ada_formatted_data.append(ada_format)
     
     # Store Ada formatted data in session state
@@ -562,7 +659,7 @@ def display_crawl_results(crawl_data, language, knowledge_source_id):
     st.info(f"✅ {len(ada_formatted_data)} articles formatted and ready for Ada upload. Use the upload section below to proceed.")
 
 def display_paginated_articles(filtered_articles, search_term=""):
-    """Display articles with pagination (100 per page)"""
+    """Display articles with pagination (100 per page) and enhanced search with persistent selection"""
     
     if not filtered_articles:
         st.warning("No articles to display")
@@ -640,14 +737,18 @@ def display_paginated_articles(filtered_articles, search_term=""):
     col1, col2, col3 = st.columns([1, 1, 2])
     with col1:
         if st.button("☑️ Select All (This Page)", key=f"select_all_page_{current_page}"):
-            for i in range(start_idx, end_idx):
-                st.session_state[f"article_selected_{i}"] = True
+            for article in current_page_articles:
+                # Find the original index in filtered_articles
+                original_idx = next(i for i, a in enumerate(filtered_articles) if a == article)
+                st.session_state[f"article_selected_{original_idx}"] = True
             st.rerun()
     
     with col2:
         if st.button("☐ Deselect All (This Page)", key=f"deselect_all_page_{current_page}"):
-            for i in range(start_idx, end_idx):
-                st.session_state[f"article_selected_{i}"] = False
+            for article in current_page_articles:
+                # Find the original index in filtered_articles
+                original_idx = next(i for i, a in enumerate(filtered_articles) if a == article)
+                st.session_state[f"article_selected_{original_idx}"] = False
             st.rerun()
     
     # Display current page articles
@@ -655,19 +756,20 @@ def display_paginated_articles(filtered_articles, search_term=""):
     st.write(f"**Select articles to upload (Page {current_page}):**")
     
     for page_idx, article in enumerate(current_page_articles):
-        global_idx = start_idx + page_idx
+        # Find the original index in the filtered articles list
+        original_idx = start_idx + page_idx
         
         # Default to selected if not set
-        default_selected = st.session_state.get(f"article_selected_{global_idx}", True)
+        default_selected = st.session_state.get(f"article_selected_{original_idx}", True)
         
         is_selected = st.checkbox(
             f"**{article['name']}**\n🔗 {article['url']}\n🆔 {article['id']}\n📅 {article['external_updated']}",
             value=default_selected,
-            key=f"article_selected_{global_idx}"
+            key=f"article_selected_{original_idx}"
         )
         
         if is_selected:
-            selected_indices.append(global_idx)
+            selected_indices.append(original_idx)
     
     # Bottom pagination controls (duplicate)
     st.markdown("---")
@@ -763,6 +865,27 @@ def main():
         help="Your Ada knowledge source identifier"
     )
     
+    # URL Titles Toggle
+    use_url_titles = st.sidebar.checkbox(
+        "🏷️ Use URL-based Titles",
+        value=False,
+        help="Generate titles from URL paths instead of scraped page titles (useful when all pages have the same title)"
+    )
+    
+    # Show preview of what this toggle does
+    if use_url_titles:
+        st.sidebar.info("📝 **Title Source:** URL paths\n\nExample:\n`7-petting-zoo-animals` → `Petting Zoo Animals`")
+        if 'ada_formatted_data' in st.session_state and st.session_state['ada_formatted_data']:
+            sample_articles = st.session_state['ada_formatted_data'][:3]
+            with st.sidebar.expander("📋 Title Preview"):
+                for article in sample_articles:
+                    st.write(f"• {article['name'][:40]}...")
+    else:
+        st.sidebar.info("📝 **Title Source:** Scraped page titles")
+    
+    # DETECT AND UPDATE SETTINGS AUTOMATICALLY
+    detect_and_update_settings(language, knowledge_source_id, use_url_titles)
+    
     # Validate URL
     if url:
         is_valid, message = validate_url(url)
@@ -776,6 +899,7 @@ def main():
     st.sidebar.subheader("📋 Current Config")
     st.sidebar.write(f"**Language:** {language}")
     st.sidebar.write(f"**Knowledge Source:** {knowledge_source_id}")
+    st.sidebar.write(f"**Title Mode:** {'URL-based' if use_url_titles else 'Scraped'}")
     st.sidebar.info("**Crawling:** Will find all pages on the website")
     st.sidebar.info("**Article IDs:** Generated from URL paths")
     if ada_config_valid:
@@ -841,7 +965,7 @@ def main():
                     # Step 4: Display results
                     if final_result:
                         st.subheader("📈 Results")
-                        display_crawl_results(final_result, language, knowledge_source_id)
+                        display_crawl_results(final_result, language, knowledge_source_id, use_url_titles)
                         
                         # Store in session state
                         st.session_state['crawl_results'] = final_result
@@ -875,8 +999,9 @@ def main():
         if st.button("🔄 Show Last Crawl Results", key="show_last_results"):
             display_crawl_results(
                 st.session_state['crawl_results'], 
-                st.session_state.get('language', 'en'),
-                st.session_state.get('knowledge_source_id', '123')
+                language,
+                knowledge_source_id,
+                use_url_titles
             )
 
     # PERMANENT ADA UPLOAD SECTION AT THE BOTTOM
@@ -898,25 +1023,34 @@ def main():
         else:
             st.success(f"✅ Ready to upload to **{instance_name}.ada.support**")
             
-            # ARTICLE SELECTION WITH SEARCH AND PAGINATION
+            # ARTICLE SELECTION WITH ENHANCED SEARCH AND PAGINATION
             st.subheader("📋 Select Articles to Upload")
             
-            # Search functionality
-            search_term = st.text_input("🔍 Search articles by name or URL:", placeholder="Type to search...")
+            # Enhanced search functionality with content search
+            search_term = st.text_input(
+                "🔍 Search articles (name, URL, or content):", 
+                placeholder="e.g., 'page not found' to find error pages"
+            )
             
             # Filter articles based on search
             if search_term:
                 filtered_articles = [
                     article for article in articles_data
-                    if search_term.lower() in article['name'].lower() or search_term.lower() in article['url'].lower()
+                    if search_term.lower() in article['name'].lower() 
+                    or search_term.lower() in article['url'].lower()
+                    or search_term.lower() in article.get('content', '').lower()
                 ]
                 st.info(f"🔍 Found {len(filtered_articles)} articles matching '{search_term}'")
             else:
                 filtered_articles = articles_data
             
+            # Calculate selection counts for ALL articles (not just filtered)
+            total_selected = sum(1 for i in range(len(articles_data)) 
+                                if st.session_state.get(f"article_selected_{i}", True))
+            
             if filtered_articles:
                 # Global Select All / None buttons
-                col1, col2, col3 = st.columns([1, 1, 2])
+                col1, col2, col3, col4 = st.columns(4)
                 with col1:
                     if st.button("☑️ Select All Articles", key="select_all_global"):
                         for i in range(len(filtered_articles)):
@@ -929,7 +1063,13 @@ def main():
                             st.session_state[f"article_selected_{i}"] = False
                         st.rerun()
                 
-                # PAGINATED ARTICLE DISPLAY
+                # Display selection counts
+                with col3:
+                    st.metric("Total Articles", len(articles_data))
+                with col4:
+                    st.metric("Currently Selected", total_selected)
+                
+                # PAGINATED ARTICLE DISPLAY WITH PERSISTENT SELECTION
                 selected_articles = display_paginated_articles(filtered_articles, search_term)
                 
                 # Show selection summary
