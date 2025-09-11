@@ -1233,13 +1233,14 @@ def main():
             if search_term:
                 filtered_articles = [
                     article for article in articles_data
-                    if search_term.lower() in article['name'].lower() 
-                    or search_term.lower() in article['url'].lower()
-                    or search_term.lower() in article.get('content', '').lower()
+                    if search_term.lower() in (article.get('name') or '').lower() 
+                    or search_term.lower() in (article.get('url') or '').lower()
+                    or search_term.lower() in (article.get('content') or '').lower()
                 ]
                 st.info(f"🔍 Found {len(filtered_articles)} articles matching '{search_term}'")
             else:
                 filtered_articles = articles_data
+
             
             # Calculate selection counts for ALL articles (not just filtered)
             total_selected = sum(1 for i in range(len(articles_data)) 
