@@ -321,13 +321,55 @@ def upload_article_to_ada(article_data, instance_name, ada_api_key):
             "error": str(e)
         }
 
-def upload_selected_articles_to_ada(selected_articles, instance_name, ada_api_key, knowledge_source_id):
-    """Upload selected articles to Ada with ID resolution built-in"""
+def upload_with_never_stop_logic(article, instance_name, ada_api_key, max_retries=3):
+    """Upload single article with comprehensive error handling that never stops the process"""
+    
+    for retry in range(max_retries):
+        try:
+            result = upload_article_to_ada(article, instance_name, ada_api_key)
+            
+            if result["success"]:
+                return {"success": True, "error": None, "retries": retry, "status_code": result.get("status_code")}
+            else:
+                last_error = result.get("error", f"HTTP {result.get('status_code')}")
+                
+        except requests.exceptions.Timeout:
+            last_error = "Request timeout (30s)"
+            st.warning(f"⏰ Timeout (retry {retry + 1}): {article['name'][:30]}...")
+            
+        except requests.exceptions.ConnectionError:
+            last_error = "Connection error"
+            st.warning(f"🔌 Connection error (retry {retry + 1}): {article['name'][:30]}...")
+            
+        except Exception as e:
+            last_error = f"Unexpected error: {str(e)}"
+            st.error(f"💥 Error (retry {retry + 1}): {article['name'][:30]} - {str(e)}")
+        
+        if retry < max_retries - 1:
+            time.sleep(2 ** retry)  # Exponential backoff
+    
+    # If we get here, all retries failed - but we continue processing
+    return {"success": False, "error": last_error, "retries": max_retries, "status_code": None}
+
+def upload_selected_articles_to_ada_robust(selected_articles, instance_name, ada_api_key, knowledge_source_id, batch_size=10, max_retries=3):
+    """Upload articles with batching, retry logic, error recovery, and resume capability"""
+    
     if not selected_articles:
         st.error("No articles selected for upload")
         return 0, 0
     
-    st.info(f"🚀 Starting upload of {len(selected_articles)} selected articles to **{instance_name}.ada.support**")
+    # Initialize session state for progress tracking
+    if 'upload_progress' not in st.session_state:
+        st.session_state['upload_progress'] = {
+            'completed': 0,
+            'total': len(selected_articles),
+            'current_batch': 0
+        }
+    
+    if 'failed_uploads' not in st.session_state:
+        st.session_state['failed_uploads'] = []
+    
+    st.info(f"🚀 Starting robust upload of {len(selected_articles)} articles (Batch size: {batch_size})")
     
     # STEP 1: RESOLVE ARTICLE IDS (Always happens)
     st.markdown("---")
@@ -336,81 +378,137 @@ def upload_selected_articles_to_ada(selected_articles, instance_name, ada_api_ke
     )
     
     st.markdown("---")
-    st.subheader("📤 Uploading to Ada")
+    st.subheader("📤 Robust Upload to Ada")
     
-    # OVERALL PROGRESS BAR
+    # Process in batches
+    batches = [resolved_articles[i:i + batch_size] for i in range(0, len(resolved_articles), batch_size)]
+    
+    # Progress tracking
     overall_progress = st.progress(0)
     overall_status = st.empty()
     
-    # Results tracking
     successful_uploads = 0
     failed_uploads = 0
     upload_results = []
     
-    # Individual upload logs container
-    logs_container = st.container()
+    # Resume from where we left off
+    start_batch = st.session_state['upload_progress']['current_batch']
+    start_article = st.session_state['upload_progress']['completed']
     
-    for i, article in enumerate(resolved_articles):
-        # Update overall progress
-        progress = i / len(resolved_articles)
-        overall_progress.progress(progress)
-        overall_status.text(f"📤 Uploading {i + 1}/{len(resolved_articles)}: {article['name'][:50]}...")
-        
-        # Individual upload log
-        with logs_container:
-            with st.expander(f"📤 Uploading: {article['name']}", expanded=False):
-                st.write(f"**URL:** {article['url']}")
-                st.write(f"**ID:** {article['id']}")
-                st.write(f"**External Updated:** {article['external_updated']}")
-                
-                # Upload the article
-                with st.spinner("Uploading..."):
-                    result = upload_article_to_ada(article, instance_name, ada_api_key)
-                
-                # Show result
-                if result["success"]:
-                    successful_uploads += 1
-                    st.success(f"✅ Success! (Status: {result['status_code']})")
-                    if result["response"]:
-                        st.json(result["response"])
-                else:
-                    failed_uploads += 1
-                    error_msg = result["error"] or f"HTTP {result['status_code']}"
-                    st.error(f"❌ Failed: {error_msg}")
-                    if result["response"]:
-                        st.json(result["response"])
-                
-                upload_results.append({
-                    "article_name": article['name'],
-                    "article_id": article['id'],
-                    "success": result["success"],
-                    "status_code": result["status_code"],
-                    "error": result["error"]
-                })
-        
-        # Small delay to show progress
-        time.sleep(0.5)
+    if start_article > 0:
+        st.info(f"📍 Resuming from article {start_article + 1}...")
     
-    # Complete overall progress
-    overall_progress.progress(1.0)
-    overall_status.text("🎉 Upload process completed!")
+    try:
+        for batch_idx in range(start_batch, len(batches)):
+            st.session_state['upload_progress']['current_batch'] = batch_idx
+            batch = batches[batch_idx]
+            
+            overall_status.text(f"📦 Processing batch {batch_idx + 1}/{len(batches)} ({len(batch)} articles)")
+            
+            try:
+                for article_idx, article in enumerate(batch):
+                    global_article_idx = batch_idx * batch_size + article_idx
+                    
+                    # Skip if we already processed this article (resume functionality)
+                    if global_article_idx < start_article:
+                        continue
+                    
+                    # Update progress
+                    progress = global_article_idx / len(resolved_articles)
+                    overall_progress.progress(progress)
+                    overall_status.text(f"📤 Uploading {global_article_idx + 1}/{len(resolved_articles)}: {article['name'][:50]}...")
+                    
+                    # Upload with never-stop logic
+                    try:
+                        result = upload_with_never_stop_logic(article, instance_name, ada_api_key, max_retries)
+                        
+                        if result["success"]:
+                            successful_uploads += 1
+                            st.success(f"✅ Success: {article['name'][:50]}... (Retries: {result['retries']})")
+                        else:
+                            failed_uploads += 1
+                            st.error(f"❌ Failed: {article['name'][:50]}... - {result['error']}")
+                            
+                            # Store failed article for resume feature
+                            failed_article = article.copy()
+                            failed_article['last_error'] = result['error']
+                            st.session_state['failed_uploads'].append(failed_article)
+                        
+                        upload_results.append({
+                            "article_name": article['name'],
+                            "article_id": article['id'],
+                            "success": result["success"],
+                            "status_code": result.get("status_code"),
+                            "error": result.get("error"),
+                            "retries": result.get("retries", 0)
+                        })
+                        
+                        # Update progress tracking
+                        st.session_state['upload_progress']['completed'] = global_article_idx + 1
+                        
+                    except Exception as article_error:
+                        # NEVER let individual article errors stop the entire process
+                        st.error(f"💥 Unexpected error processing {article['name'][:50]}: {str(article_error)}")
+                        st.warning("⚠️ Continuing with next article...")
+                        
+                        failed_uploads += 1
+                        failed_article = article.copy()
+                        failed_article['last_error'] = str(article_error)
+                        st.session_state['failed_uploads'].append(failed_article)
+                        
+                        upload_results.append({
+                            "article_name": article['name'],
+                            "article_id": article['id'],
+                            "success": False,
+                            "status_code": None,
+                            "error": str(article_error),
+                            "retries": 0
+                        })
+                        
+                        continue
+                
+                # Rest between batches (except for the last batch)
+                if batch_idx < len(batches) - 1:
+                    st.write(f"   ⏸️ Resting 3 seconds between batches...")
+                    time.sleep(3)
+                    
+            except Exception as batch_error:
+                # NEVER let batch errors stop the entire process
+                st.error(f"❌ Batch {batch_idx + 1} error: {str(batch_error)}")
+                st.warning("⚠️ Continuing with next batch...")
+                continue
+        
+        # Complete progress
+        overall_progress.progress(1.0)
+        overall_status.text("🎉 Robust upload process completed!")
+        
+        # Reset progress tracking after successful completion
+        st.session_state['upload_progress'] = {
+            'completed': 0,
+            'total': 0,
+            'current_batch': 0
+        }
+        
+    except Exception as overall_error:
+        st.error(f"💥 Overall upload error: {str(overall_error)}")
+        st.warning("⚠️ Upload process interrupted. Progress has been saved for resume.")
     
     # Final summary
     st.markdown("---")
-    st.subheader("📊 Upload Summary")
+    st.subheader("📊 Robust Upload Summary")
     
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Total Uploaded", len(resolved_articles))
+        st.metric("Total Processed", len(upload_results))
     with col2:
         st.metric("✅ Successful", successful_uploads)
     with col3:
         st.metric("❌ Failed", failed_uploads)
     with col4:
-        success_rate = (successful_uploads / len(resolved_articles)) * 100 if resolved_articles else 0
+        success_rate = (successful_uploads / len(upload_results)) * 100 if upload_results else 0
         st.metric("Success Rate", f"{success_rate:.1f}%")
     
-    # Results table
+    # Show detailed results
     if upload_results:
         with st.expander("📋 Detailed Upload Results"):
             results_df = []
@@ -420,6 +518,7 @@ def upload_selected_articles_to_ada(selected_articles, instance_name, ada_api_ke
                     "Article ID": result["article_id"],
                     "Status": "✅ Success" if result["success"] else "❌ Failed",
                     "Status Code": result["status_code"] or "N/A",
+                    "Retries": result.get("retries", 0),
                     "Error": result["error"] or "None"
                 })
             
@@ -658,12 +757,23 @@ def display_crawl_results(crawl_data, language, knowledge_source_id, use_url_tit
     # Simple confirmation message only
     st.info(f"✅ {len(ada_formatted_data)} articles formatted and ready for Ada upload. Use the upload section below to proceed.")
 
+def find_global_article_index(article, full_dataset):
+    """Find the global index of an article in the full dataset"""
+    for i, original_article in enumerate(full_dataset):
+        if (original_article.get('url') == article.get('url') and 
+            original_article.get('id') == article.get('id')):
+            return i
+    return None
+
 def display_paginated_articles(filtered_articles, search_term=""):
-    """Display articles with pagination (100 per page) and enhanced search with persistent selection"""
+    """Display articles with pagination (100 per page) and enhanced search with persistent selection - FIXED"""
     
     if not filtered_articles:
         st.warning("No articles to display")
         return []
+    
+    # Get full dataset for global index mapping
+    full_dataset = st.session_state.get('ada_formatted_data', [])
     
     # Pagination settings
     ARTICLES_PER_PAGE = 100
@@ -733,43 +843,47 @@ def display_paginated_articles(filtered_articles, search_term=""):
             st.session_state['current_page'] = total_pages
             st.rerun()
     
-    # Select All / None buttons for current page
+    # Select All / None buttons for current page - FIXED
     col1, col2, col3 = st.columns([1, 1, 2])
     with col1:
         if st.button("☑️ Select All (This Page)", key=f"select_all_page_{current_page}"):
             for article in current_page_articles:
-                # Find the original index in filtered_articles
-                original_idx = next(i for i, a in enumerate(filtered_articles) if a == article)
-                st.session_state[f"article_selected_{original_idx}"] = True
+                global_idx = find_global_article_index(article, full_dataset)
+                if global_idx is not None:
+                    st.session_state[f"article_selected_{global_idx}"] = True
             st.rerun()
     
     with col2:
         if st.button("☐ Deselect All (This Page)", key=f"deselect_all_page_{current_page}"):
             for article in current_page_articles:
-                # Find the original index in filtered_articles
-                original_idx = next(i for i, a in enumerate(filtered_articles) if a == article)
-                st.session_state[f"article_selected_{original_idx}"] = False
+                global_idx = find_global_article_index(article, full_dataset)
+                if global_idx is not None:
+                    st.session_state[f"article_selected_{global_idx}"] = False
             st.rerun()
     
-    # Display current page articles
+    # Display current page articles - FIXED
     selected_indices = []
     st.write(f"**Select articles to upload (Page {current_page}):**")
     
     for page_idx, article in enumerate(current_page_articles):
-        # Find the original index in the filtered articles list
-        original_idx = start_idx + page_idx
+        # FIXED: Find the TRUE global index in the original full dataset
+        global_idx = find_global_article_index(article, full_dataset)
         
-        # Default to selected if not set
-        default_selected = st.session_state.get(f"article_selected_{original_idx}", True)
+        # Fallback if no match found
+        if global_idx is None:
+            global_idx = start_idx + page_idx
+        
+        # Use the GLOBAL index for session state
+        default_selected = st.session_state.get(f"article_selected_{global_idx}", True)
         
         is_selected = st.checkbox(
             f"**{article['name']}**\n🔗 {article['url']}\n🆔 {article['id']}\n📅 {article['external_updated']}",
             value=default_selected,
-            key=f"article_selected_{original_idx}"
+            key=f"article_selected_{global_idx}"  # Use global index
         )
         
         if is_selected:
-            selected_indices.append(original_idx)
+            selected_indices.append(global_idx)
     
     # Bottom pagination controls (duplicate)
     st.markdown("---")
@@ -798,13 +912,13 @@ def display_paginated_articles(filtered_articles, search_term=""):
             st.session_state['current_page'] = total_pages
             st.rerun()
     
-    # Return all selected articles (from all pages)
+    # Return all selected articles (from all pages) - FIXED
     all_selected_indices = []
-    for i in range(len(filtered_articles)):
+    for i in range(len(full_dataset)):
         if st.session_state.get(f"article_selected_{i}", True):
             all_selected_indices.append(i)
     
-    return [filtered_articles[i] for i in all_selected_indices]
+    return [full_dataset[i] for i in all_selected_indices if i < len(full_dataset)]
 
 def main():
     st.title("🔥 APAC WEB SCRAPER")
@@ -849,6 +963,19 @@ def main():
         value="https://example.com"
     )
     
+    # Crawl Settings
+    st.sidebar.header("🕷️ Crawl Settings")
+    use_stealth_mode = st.sidebar.checkbox(
+        "🥷 Stealth Mode",
+        value=False,
+        help="Use stealth proxy to avoid bot detection (slower but more reliable)"
+    )
+    
+    if use_stealth_mode:
+        st.sidebar.info("🥷 **Stealth Mode ON** - Using proxy to avoid detection")
+    else:
+        st.sidebar.info("🏃 **Normal Mode** - Faster crawling")
+    
     # Knowledge configuration
     st.sidebar.header("📚 Knowledge Configuration")
     language = st.sidebar.text_input(
@@ -870,6 +997,24 @@ def main():
         "🏷️ Use URL-based Titles",
         value=False,
         help="Generate titles from URL paths instead of scraped page titles (useful when all pages have the same title)"
+    )
+    
+    # Upload Settings
+    st.sidebar.header("⚙️ Upload Settings")
+    batch_size = st.sidebar.slider(
+        "Batch Size",
+        min_value=1,
+        max_value=20,
+        value=10,
+        help="Number of articles to upload before resting (smaller = more reliable)"
+    )
+    
+    max_retries = st.sidebar.slider(
+        "Max Retries per Article",
+        min_value=1,
+        max_value=5,
+        value=3,
+        help="How many times to retry failed uploads"
     )
     
     # Show preview of what this toggle does
@@ -900,6 +1045,9 @@ def main():
     st.sidebar.write(f"**Language:** {language}")
     st.sidebar.write(f"**Knowledge Source:** {knowledge_source_id}")
     st.sidebar.write(f"**Title Mode:** {'URL-based' if use_url_titles else 'Scraped'}")
+    st.sidebar.write(f"**Stealth Mode:** {'ON' if use_stealth_mode else 'OFF'}")
+    st.sidebar.write(f"**Batch Size:** {batch_size}")
+    st.sidebar.write(f"**Max Retries:** {max_retries}")
     st.sidebar.info("**Crawling:** Will find all pages on the website")
     st.sidebar.info("**Article IDs:** Generated from URL paths")
     if ada_config_valid:
@@ -926,16 +1074,25 @@ def main():
                 firecrawl = FirecrawlApp(api_key=FIRECRAWL_API_KEY)
                 
                 st.info(f"🔄 Starting crawl of {url} (will find all available pages)...")
+                if use_stealth_mode:
+                    st.info("🥷 Using stealth mode - this may be slower but more reliable")
                 st.warning("⚠️ This will crawl all pages found on the website. This may take time and use credits based on the site size.")
+                
+                # Prepare scrape options
+                scrape_options = {
+                    'onlyMainContent': True,
+                    'formats': ['markdown']
+                }
+                
+                # Add stealth mode if enabled
+                if use_stealth_mode:
+                    scrape_options['proxy'] = 'stealth'
                 
                 # Step 1: Start crawl and get job ID (no limit = crawl all pages)
                 with st.spinner("Starting crawl job..."):
                     job_response = firecrawl.start_crawl(
                         url=url,
-                        scrape_options={
-                            'onlyMainContent': True,
-                            'formats': ['markdown']
-                        }
+                        scrape_options=scrape_options
                     )
                 
                 st.write(f"**Debug - Job Response Type:** {type(job_response)}")
@@ -1008,6 +1165,41 @@ def main():
     st.markdown("---")
     st.header("🚀 Upload to Ada")
     
+    # Resume Failed Uploads Feature
+    if st.session_state.get('failed_uploads', []):
+        st.warning(f"⚠️ {len(st.session_state['failed_uploads'])} articles failed in previous upload")
+        
+        with st.expander("🔄 Resume Failed Uploads", expanded=False):
+            st.write("**Select which failed articles to retry:**")
+            
+            retry_selected = []
+            for i, failed_article in enumerate(st.session_state['failed_uploads']):
+                if st.checkbox(
+                    f"**{failed_article['name']}** - Error: {failed_article.get('last_error', 'Unknown')}",
+                    value=True,  # Default selected
+                    key=f"retry_article_{i}"
+                ):
+                    retry_selected.append(failed_article)
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if retry_selected and st.button(f"🚀 Retry {len(retry_selected)} Selected Articles"):
+                    st.session_state['failed_uploads'] = []  # Clear the failed list
+                    st.info(f"🔄 Retrying {len(retry_selected)} selected failed articles...")
+                    try:
+                        success_count, fail_count = upload_selected_articles_to_ada_robust(
+                            retry_selected, instance_name, ada_api_key, knowledge_source_id, batch_size, max_retries
+                        )
+                        st.success(f"🎉 Retry complete! {success_count} successful, {fail_count} failed")
+                    except Exception as e:
+                        st.error(f"❌ Retry error: {str(e)}")
+            
+            with col2:
+                if st.button("🗑️ Clear Failed List"):
+                    st.session_state['failed_uploads'] = []
+                    st.success("✅ Failed uploads list cleared")
+                    st.rerun()
+    
     # Check if we have data to upload
     if 'ada_formatted_data' in st.session_state and st.session_state['ada_formatted_data']:
         articles_data = st.session_state['ada_formatted_data']
@@ -1022,6 +1214,11 @@ def main():
             st.info("Please configure your Ada instance name and API key in the sidebar.")
         else:
             st.success(f"✅ Ready to upload to **{instance_name}.ada.support**")
+            
+            # Show progress recovery if available
+            if st.session_state.get('upload_progress', {}).get('completed', 0) > 0:
+                progress_info = st.session_state['upload_progress']
+                st.info(f"📍 Upload was interrupted. Can resume from article {progress_info['completed'] + 1}")
             
             # ARTICLE SELECTION WITH ENHANCED SEARCH AND PAGINATION
             st.subheader("📋 Select Articles to Upload")
@@ -1053,13 +1250,13 @@ def main():
                 col1, col2, col3, col4 = st.columns(4)
                 with col1:
                     if st.button("☑️ Select All Articles", key="select_all_global"):
-                        for i in range(len(filtered_articles)):
+                        for i in range(len(articles_data)):
                             st.session_state[f"article_selected_{i}"] = True
                         st.rerun()
                 
                 with col2:
                     if st.button("☐ Deselect All Articles", key="select_none_global"):
-                        for i in range(len(filtered_articles)):
+                        for i in range(len(articles_data)):
                             st.session_state[f"article_selected_{i}"] = False
                         st.rerun()
                 
@@ -1069,7 +1266,7 @@ def main():
                 with col4:
                     st.metric("Currently Selected", total_selected)
                 
-                # PAGINATED ARTICLE DISPLAY WITH PERSISTENT SELECTION
+                # PAGINATED ARTICLE DISPLAY WITH PERSISTENT SELECTION - FIXED
                 selected_articles = display_paginated_articles(filtered_articles, search_term)
                 
                 # Show selection summary
@@ -1099,17 +1296,17 @@ def main():
                 if not selected_articles:
                     st.warning("⚠️ Please select at least one article to upload")
                 else:
-                    st.info("🔄 Upload Process: Check existing articles → Resolve IDs → Upload to Ada")
+                    st.info(f"🔄 Upload Process: Check existing articles → Resolve IDs → Upload to Ada (Batch size: {batch_size}, Max retries: {max_retries})")
                     
                     if st.button(
                         f"🚀 Upload {len(selected_articles)} Selected Articles to Ada",
                         type="primary",
                         key="upload_selected_articles"
                     ):
-                        st.write(f"🎯 Starting upload process for {len(selected_articles)} articles...")
+                        st.write(f"🎯 Starting robust upload process for {len(selected_articles)} articles...")
                         try:
-                            success_count, fail_count = upload_selected_articles_to_ada(
-                                selected_articles, instance_name, ada_api_key, knowledge_source_id
+                            success_count, fail_count = upload_selected_articles_to_ada_robust(
+                                selected_articles, instance_name, ada_api_key, knowledge_source_id, batch_size, max_retries
                             )
                             st.balloons()
                             st.success(f"🎉 Upload complete! {success_count} successful, {fail_count} failed")
